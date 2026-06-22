@@ -1,0 +1,102 @@
+name: 'Deploy Infra'
+
+on:
+  push:
+    branches:
+      - infra
+    paths:
+      - 'infra/**'
+      - '.github/workflows/infra.yml'
+  pull_request:
+    branches:
+      - infra
+      - main
+    paths:
+      - 'infra/**'
+      - '.github/workflows/infra.yml'
+  workflow_dispatch:
+    inputs:
+      destroy:
+        description: 'Destruir a infraestrutura ao inves de aplicar'
+        type: boolean
+        default: false
+
+env:
+  TF_VERSION: '1.9.8'
+  TF_LINT_VERSION: 'v0.53.0'
+  DESTROY: ${{ github.event.inputs.destroy || 'false' }}
+  ENVIRONMENT: prod
+
+  # Variaveis do Terraform (TF_VAR_*) lidas dos secrets do repositorio.
+  TF_VAR_aws_region: ${{ secrets.AWS_REGION }}
+  TF_VAR_ssh_public_key: ${{ secrets.TF_VAR_ssh_public_key }}
+  TF_VAR_s3_bucket_name: ${{ secrets.TF_VAR_s3_bucket_name }}
+  TF_VAR_app_hostname: ${{ secrets.TF_VAR_app_hostname }}
+  TF_VAR_cloudflare_api_token: ${{ secrets.TF_VAR_cloudflare_api_token }}
+  TF_VAR_cloudflare_account_id: ${{ secrets.TF_VAR_cloudflare_account_id }}
+  TF_VAR_cloudflare_zone_id: ${{ secrets.TF_VAR_cloudflare_zone_id }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: ./infra
+
+jobs:
+  terraform:
+    name: Terraform
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Setup TFLint
+        uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: ${{ env.TF_LINT_VERSION }}
+
+      - name: TFLint
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tflint --init
+          tflint -f compact
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Terraform fmt
+        run: terraform fmt -check -recursive
+
+      - name: Terraform Init
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=${{ secrets.TF_STATE_KEY }}" \
+            -backend-config="region=${{ secrets.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_STATE_LOCK_TABLE }}"
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        if: env.DESTROY != 'true'
+        run: terraform plan -input=false -no-color
+
+      - name: Terraform Apply
+        if: github.event_name == 'push' && github.ref == 'refs/heads/infra' && env.DESTROY != 'true'
+        run: terraform apply -auto-approve -input=false
+
+      - name: Terraform Destroy
+        if: github.event_name == 'workflow_dispatch' && env.DESTROY == 'true'
+        run: terraform destroy -auto-approve -input=false
