@@ -1,14 +1,14 @@
 # Dify-community-on-aws
 
 Infrastructure as code para rodar o [Dify Community](https://docs.dify.ai/en/self-host/quick-start/docker-compose)
-em uma unica EC2 na AWS, provisionada via **Terraform** e **GitHub Actions**.
+em uma unica EC2 na AWS, provisionada via **OpenTofu** e **GitHub Actions**.
 
 ## Arquitetura
 
 - **EC2 `t3.medium`** (Amazon Linux 2023) em VPC dedicada, subnet publica usada apenas
   para egress (sem NAT Gateway, sem Elastic IP).
 - **Launch template** com user-data que instala **Docker** e sobe o **cloudflared** como
-  container, conectando a um **Cloudflare Tunnel** gerenciado pelo Terraform.
+  container, conectando a um **Cloudflare Tunnel** gerenciado pelo OpenTofu.
 - **Sem portas abertas para a internet.** O acesso publico ao Dify chega pelo tunnel
   (HTTP -> `localhost:80`); o acesso administrativo e' por **SSH via Cloudflare WARP**
   (warp-routing -> IP privado da EC2).
@@ -24,7 +24,7 @@ em uma unica EC2 na AWS, provisionada via **Terraform** e **GitHub Actions**.
 ## Estrutura
 
 ```
-infra/                 # Terraform da infraestrutura
+infra/                 # OpenTofu da infraestrutura
   versions.tf          # versoes + backend S3
   providers.tf         # providers aws + cloudflare
   variables.tf         # variaveis de entrada
@@ -45,11 +45,16 @@ infra/                 # Terraform da infraestrutura
 - Conta AWS + credenciais com permissao para criar VPC/EC2/IAM/S3/Scheduler.
 - Conta Cloudflare: `account_id`, `zone_id` e um **API token** com permissoes
   `Account > Cloudflare Tunnel: Edit` e `Zone > DNS: Edit`.
-- Terraform >= 1.9, e (para validar localmente) [tflint](https://github.com/terraform-linters/tflint).
+- OpenTofu >= 1.8 (CLI `tofu`), e (para validar localmente) [tflint](https://github.com/terraform-linters/tflint).
 
-## Bootstrap do backend (uma vez)
+## Bootstrap do backend
 
-O backend S3+DynamoDB precisa existir antes do primeiro `terraform init`:
+O backend S3+DynamoDB precisa existir antes do `tofu init`. **No CI isso e'
+automatico**: o workflow tem um passo `Bootstrap remote state (S3 + DynamoDB)` que
+cria o bucket (versionado, encriptado, sem acesso publico) e a tabela de lock de forma
+**idempotente** antes do init. Basta ter os secrets/vars configurados.
+
+Para uso **local** (antes de qualquer rodada do pipeline), crie o backend manualmente:
 
 ```bash
 AWS_REGION=us-east-1
@@ -78,28 +83,35 @@ aws dynamodb create-table --table-name "$LOCK_TABLE" --region "$AWS_REGION" \
 cp .env.infra.example .env.infra      # preencha os valores
 set -a && source .env.infra && set +a
 
-terraform -chdir=infra init \
+tofu -chdir=infra init \
   -backend-config="bucket=$TF_STATE_BUCKET" \
   -backend-config="key=$TF_STATE_KEY" \
   -backend-config="region=$AWS_REGION" \
   -backend-config="dynamodb_table=$TF_STATE_LOCK_TABLE"
 
-terraform -chdir=infra plan
-terraform -chdir=infra apply
+tofu -chdir=infra plan
+tofu -chdir=infra apply
 ```
 
 ## CI/CD (GitHub Actions)
 
 Workflow `Deploy Infra` (`.github/workflows/infra.yml`):
 
+- Em todo evento: garante o backend (cria bucket S3 + tabela DynamoDB se faltarem, idempotente).
 - **Pull request** -> roda `fmt`, `tflint`, `validate`, `plan`.
 - **Push na branch `infra`** -> aplica (`apply`).
 - **`workflow_dispatch` com `destroy=true`** -> destroi a infra.
 
+Variavel (repository **variable**, nao-secret):
+
+```
+AWS_REGION
+```
+
 Secrets necessarios no repositorio:
 
 ```
-AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION
+AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
 TF_STATE_BUCKET, TF_STATE_KEY, TF_STATE_LOCK_TABLE
 TF_VAR_ssh_public_key, TF_VAR_s3_bucket_name, TF_VAR_app_hostname
 TF_VAR_cloudflare_api_token, TF_VAR_cloudflare_account_id, TF_VAR_cloudflare_zone_id

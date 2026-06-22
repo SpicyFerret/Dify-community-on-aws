@@ -1,5 +1,6 @@
+# OpenTofu le o mesmo bloco `terraform {}`. CLI: `tofu` (drop-in do terraform).
 terraform {
-  required_version = ">= 1.9.0"
+  required_version = ">= 1.8.0"
 
   required_providers {
     aws = {
@@ -18,6 +19,6 @@ terraform {
 
   # Backend remoto S3 + lock em DynamoDB.
   # A configuracao concreta (bucket/key/region/dynamodb_table) e injetada via
-  # `-backend-config` no `terraform init` (ver workflow e README).
+  # `-backend-config` no `tofu init` (ver workflow e README).
   backend "s3" {}
 }
