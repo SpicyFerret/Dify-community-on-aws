@@ -4,12 +4,16 @@
 yum update -y
 
 # 2. Detect Amazon Linux Version and Install Docker
-if grep -q "Amazon Linux release 2" /etc/system-release; then
+# VERSION_ID e' "2" no AL2 e "2023" no AL2023. Usamos ele em vez de
+# grep "Amazon Linux release 2", que dava falso-positivo no AL2023
+# ("...release 2023" contem "release 2") e caia no ramo errado.
+. /etc/os-release
+if [ "$VERSION_ID" = "2" ]; then
     # Amazon Linux 2
     amazon-linux-extras install docker -y
 else
     # Amazon Linux 2023 (or newer)
-    yum install docker -y
+    dnf install -y docker || yum install -y docker
 fi
 
 # 3. Start and enable Docker service
