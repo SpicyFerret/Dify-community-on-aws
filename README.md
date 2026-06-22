@@ -49,16 +49,27 @@ infra/                 # OpenTofu da infraestrutura
 
 ## Bootstrap do backend
 
-O backend S3+DynamoDB precisa existir antes do `tofu init`. **No CI isso e'
-automatico**: o workflow tem um passo `Bootstrap remote state (S3 + DynamoDB)` que
-cria o bucket (versionado, encriptado, sem acesso publico) e a tabela de lock de forma
-**idempotente** antes do init. Basta ter os secrets/vars configurados.
+O backend e' **chumbado e deterministico** (nao precisa de secret): o nome do bucket de
+state e' montado em runtime como **`<prefixo>-<accountId>-<region>`** (Account-Regional
+namespace). Os valores fixos ficam no `env` do workflow:
 
-Para uso **local** (antes de qualquer rodada do pipeline), crie o backend manualmente:
+```
+STATE_BUCKET_PREFIX = dify-tfstate     # => dify-tfstate-<accountId>-<region>
+STATE_KEY           = infra/terraform.tfstate
+STATE_LOCK_TABLE    = dify-tflock
+```
+
+**No CI o bootstrap e' automatico**: o passo `Bootstrap remote state (S3 + DynamoDB)`
+cria o bucket (versionado, encriptado, sem acesso publico) e a tabela de lock de forma
+**idempotente** antes do init.
+
+Para uso **local** (antes de qualquer rodada do pipeline), crie o backend manualmente
+com o mesmo nome deterministico:
 
 ```bash
 AWS_REGION=us-east-1
-BUCKET=dify-tfstate-<conta-id>
+ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+BUCKET="dify-tfstate-${ACCOUNT_ID}-${AWS_REGION}"
 LOCK_TABLE=dify-tflock
 
 aws s3api create-bucket --bucket "$BUCKET" --region "$AWS_REGION"
@@ -83,11 +94,14 @@ aws dynamodb create-table --table-name "$LOCK_TABLE" --region "$AWS_REGION" \
 cp .env.infra.example .env.infra      # preencha os valores
 set -a && source .env.infra && set +a
 
+# AWS_ACCOUNT_ID vem do .env.infra; ou: AWS_ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+STATE_BUCKET="dify-tfstate-${AWS_ACCOUNT_ID}-${AWS_REGION}"
+
 tofu -chdir=infra init \
-  -backend-config="bucket=$TF_STATE_BUCKET" \
-  -backend-config="key=$TF_STATE_KEY" \
+  -backend-config="bucket=$STATE_BUCKET" \
+  -backend-config="key=infra/terraform.tfstate" \
   -backend-config="region=$AWS_REGION" \
-  -backend-config="dynamodb_table=$TF_STATE_LOCK_TABLE"
+  -backend-config="dynamodb_table=dify-tflock"
 
 tofu -chdir=infra plan
 tofu -chdir=infra apply
@@ -112,10 +126,37 @@ Secrets necessarios no repositorio:
 
 ```
 AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
-TF_STATE_BUCKET, TF_STATE_KEY, TF_STATE_LOCK_TABLE
-TF_VAR_ssh_public_key, TF_VAR_s3_bucket_name, TF_VAR_app_hostname
+TF_VAR_ssh_public_key, TF_VAR_app_hostname
 TF_VAR_cloudflare_api_token, TF_VAR_cloudflare_account_id, TF_VAR_cloudflare_zone_id
 ```
+
+> O backend (bucket/key/lock) nao e' mais secret: e' chumbado/derivado no workflow
+> (`STATE_BUCKET_PREFIX` + accountId + region).
+
+## IAM da pipeline (credenciais do CI)
+
+Exemplos de policy minima para a identidade que o pipeline usa (a que gera as
+`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`). Cobre o escopo da infra e do app:
+backend (S3+DynamoDB), VPC/EC2, IAM (apenas roles/instance-profile `dify-*`),
+`PassRole` para EC2 e Scheduler, EventBridge Scheduler e o bucket S3 do Dify.
+
+- [infra/iam/ci-deploy-policy.json](infra/iam/ci-deploy-policy.json) — **permissions
+  policy** (o que o pipeline pode fazer). Anexe ao usuario/role do CI.
+- [infra/iam/ci-trust-policy-oidc.json](infra/iam/ci-trust-policy-oidc.json) — **custom
+  trust policy** de exemplo, caso prefira uma **role via OIDC do GitHub** em vez de
+  access keys (recomendado). E' o JSON que vai no campo "Custom trust policy" ao criar a role.
+
+> Distincao importante: a **trust policy** define *quem* assume a role; a **permissions
+> policy** define *o que* pode fazer. Com **access keys** (setup atual) voce so precisa
+> anexar a permissions policy ao usuario IAM — a trust policy nao se aplica. Com **role
+> OIDC** voce usa as duas (e troca o passo `Configure AWS credentials` para `role-to-assume`).
+
+Antes de aplicar, substitua os placeholders `<ACCOUNT_ID>` e `<REGION>`. Os buckets
+seguem o padrao deterministico (Account-Regional namespace): state em
+`dify-tfstate-<ACCOUNT_ID>-<REGION>` e storage do Dify em
+`dify-prod-<ACCOUNT_ID>-<REGION>` (`<project>-<environment>-<accountId>-<region>`); a
+tabela de lock e' `dify-tflock`. Os ARNs de IAM/Scheduler assumem o prefixo de nome
+`dify-*` (variavel `project`); ajuste se mudar o `project`/`environment`.
 
 ## Custo
 

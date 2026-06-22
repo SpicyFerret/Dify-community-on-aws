@@ -3,7 +3,9 @@
 ###############################################################################
 
 resource "aws_s3_bucket" "storage" {
-  bucket = var.s3_bucket_name
+  # Nome deterministico (Account-Regional namespace), igual ao state bucket:
+  # <project>-<environment>-<accountId>-<region>. Sem variavel/secret.
+  bucket = "${local.name}-${data.aws_caller_identity.current.account_id}-${var.aws_region}"
 
   tags = {
     Name = "${local.name}-storage"

@@ -59,12 +59,10 @@ variable "subnet_cidr" {
 
 ###############################################################################
 # Storage Dify (S3)
+#
+# O nome do bucket e' deterministico (<project>-<environment>-<accountId>-<region>),
+# derivado em s3.tf. Nao ha variavel de entrada.
 ###############################################################################
-
-variable "s3_bucket_name" {
-  description = "Nome (globalmente unico) do bucket S3 para os arquivos do Dify."
-  type        = string
-}
 
 ###############################################################################
 # Agendamento (EventBridge Scheduler)

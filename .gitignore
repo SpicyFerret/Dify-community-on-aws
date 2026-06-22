@@ -19,3 +19,7 @@ tfplan
 .env
 .env.*
 !.env.*.example
+
+# Policies IAM com valores concretos (account id, region) - nao versionar.
+# O template versionado e' infra/iam/ci-deploy-policy.json (com placeholders).
+*.local.json
