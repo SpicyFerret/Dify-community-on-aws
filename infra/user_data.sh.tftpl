@@ -26,7 +26,11 @@ usermod -a -G docker ec2-user
 # 5. Run Cloudflare Tunnel via Docker
 TUNNEL_TOKEN="${tunnel_token}"
 
+# --network host: o ingress do tunnel aponta p/ http://localhost:80; com host
+# network, "localhost" no container e' o host (onde o nginx publica 0.0.0.0:80).
+# Sem isso o cloudflared nao alcanca a origem e o Cloudflare devolve 502.
 docker run -d \
   --name cloudflare-tunnel \
   --restart unless-stopped \
+  --network host \
   cloudflare/cloudflared:latest tunnel --no-autoupdate run --token "$TUNNEL_TOKEN"
