@@ -162,6 +162,30 @@
       "Resource": "arn:aws:scheduler:<REGION>:<ACCOUNT_ID>:schedule/default/dify-*"
     },
     {
+      "Sid": "SsmSendCommand",
+      "Effect": "Allow",
+      "Action": "ssm:SendCommand",
+      "Resource": [
+        "arn:aws:ec2:<REGION>:<ACCOUNT_ID>:instance/*",
+        "arn:aws:ssm:<REGION>::document/AWS-RunShellScript"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "ssm:resourceTag/Name": "dify-prod"
+        }
+      }
+    },
+    {
+      "Sid": "SsmReadInvocations",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:GetCommandInvocation",
+        "ssm:ListCommandInvocations",
+        "ssm:DescribeInstanceInformation"
+      ],
+      "Resource": "*"
+    },
+    {
       "Sid": "ReadIdentity",
       "Effect": "Allow",
       "Action": "sts:GetCallerIdentity",

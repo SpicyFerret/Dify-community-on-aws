@@ -35,9 +35,13 @@ infra/                 # OpenTofu da infraestrutura
   cloudflare.tf        # tunnel, config (ingress/warp), rota privada, DNS
   schedule.tf          # EventBridge Scheduler start/stop
   outputs.tf
-.github/workflows/infra.yml   # pipeline (fmt, tflint, validate, plan, apply/destroy)
+  iam/                 # exemplos de policy/trust do CI
+app/
+  deploy.sh            # deploy do Dify na EC2 (rodado via SSM, idempotente)
+.github/workflows/infra.yml   # pipeline infra (fmt, tflint, validate, plan, apply/destroy)
+.github/workflows/app.yml     # pipeline app (deploy do Dify via SSM)
 .env.infra.example     # variaveis da infra
-.env.app.example       # variaveis do app (integracao com S3)
+.env.app.example       # variaveis do app (referencia; injetadas pelo deploy.sh)
 ```
 
 ## Pre-requisitos
@@ -157,6 +161,48 @@ seguem o padrao deterministico (Account-Regional namespace): state em
 `dify-prod-<ACCOUNT_ID>-<REGION>` (`<project>-<environment>-<accountId>-<region>`); a
 tabela de lock e' `dify-tflock`. Os ARNs de IAM/Scheduler assumem o prefixo de nome
 `dify-*` (variavel `project`); ajuste se mudar o `project`/`environment`.
+
+## Camada app (deploy do Dify)
+
+Depois que a infra esta no ar, a camada `app/` sobe o **Dify Community** na EC2 via
+**SSM Run Command** — sem SSH e sem abrir portas (o CI usa as credenciais do `dify-ci`
+e a instancia tem agente SSM + instance role).
+
+Workflow `Deploy App (Dify)` (`.github/workflows/app.yml`):
+
+- **Pull request** (paths `app/**`) -> `shellcheck` no `app/deploy.sh` (so validacao).
+- **Push na `main`** (paths `app/**`) ou **`workflow_dispatch`** -> resolve a instancia pela
+  tag `Name=dify-prod`, garante ela `running` (liga se estiver parada pelo agendamento),
+  espera o SSM ficar `Online` e roda o `app/deploy.sh` na maquina.
+
+O [app/deploy.sh](app/deploy.sh) e' idempotente e, na instancia: cria swap (~4 GiB), garante o
+plugin `docker compose`, faz checkout do Dify na tag pinada em `/opt/dify`, monta o `.env`
+(gera o `SECRET_KEY` na 1a vez e **preserva** depois; injeta `STORAGE_TYPE=s3` +
+`S3_BUCKET_NAME`/`S3_REGION` + `S3_USE_AWS_MANAGED_IAM=true`) e roda `docker compose up -d`.
+Nenhum segredo trafega pelo SSM — o bucket/regiao sao derivados e o `SECRET_KEY` nasce e fica
+na maquina. Os containers usam `restart: always`, entao voltam sozinhos no start diario das 08h.
+
+Variavel (repository **variable**, opcional):
+
+```
+DIFY_VERSION    # tag do Dify a subir; default no workflow e' 1.4.3. Ajuste para a release desejada.
+```
+
+> Reusa os secrets/variable que ja existem (`AWS_REGION`, `AWS_ACCESS_KEY_ID`,
+> `AWS_SECRET_ACCESS_KEY`, `TF_VAR_app_hostname`). Como o app roda na `main`, comite os
+> arquivos de `app/` + `.github/workflows/app.yml` nessa branch.
+
+> **Permissoes:** o `dify-ci` precisa das permissoes de SSM (statements `SsmSendCommand` +
+> `SsmReadInvocations` em [ci-deploy-policy.json](infra/iam/ci-deploy-policy.json)). Apos
+> atualizar a policy, re-aplique:
+> ```bash
+> aws iam put-user-policy --user-name dify-ci --policy-name dify-ci-deploy \
+>   --policy-document file://infra/iam/ci-deploy-policy.local.json
+> ```
+
+> **Versao do Dify e storage:** versoes recentes podem usar OpenDAL
+> (`STORAGE_TYPE=opendal` + `OPENDAL_SCHEME=s3`). Ao trocar a tag, confira o `.env.example`
+> dela e ajuste os `set_kv` do `deploy.sh` se necessario.
 
 ## Custo
 
