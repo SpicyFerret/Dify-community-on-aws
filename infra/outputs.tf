@@ -27,3 +27,8 @@ output "s3_bucket_name" {
   description = "Nome do bucket S3 usado como storage de arquivos do Dify."
   value       = aws_s3_bucket.storage.bucket
 }
+
+output "data_volume_id" {
+  description = "ID do volume EBS persistente (/opt/dify: repo, .env e bancos)."
+  value       = aws_ebs_volume.data.id
+}

@@ -31,9 +31,15 @@ variable "instance_type" {
 }
 
 variable "root_volume_size" {
-  description = "Tamanho do EBS root em GiB (SO + imagens docker + volumes dos bancos)."
+  description = "Tamanho do EBS root em GiB (SO + imagens docker; dados ficam no volume de dados)."
   type        = number
   default     = 30
+}
+
+variable "data_volume_size" {
+  description = "Tamanho (GiB) do volume EBS de dados persistente (/opt/dify: repo, .env e bancos)."
+  type        = number
+  default     = 20
 }
 
 variable "ssh_public_key" {

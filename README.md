@@ -182,6 +182,21 @@ plugin `docker compose`, faz checkout do Dify na tag pinada em `/opt/dify`, mont
 Nenhum segredo trafega pelo SSM — o bucket/regiao sao derivados e o `SECRET_KEY` nasce e fica
 na maquina. Os containers usam `restart: always`, entao voltam sozinhos no start diario das 08h.
 
+### Persistencia dos dados (sobrevive a recriacao da instancia)
+
+`/opt/dify` fica num **volume EBS dedicado e persistente** (`aws_ebs_volume.data`, montado pelo
+`user_data` via fstab), separado do EBS root. Ali vivem o repo do Dify, o `.env` (com o
+`SECRET_KEY`) e os volumes dos bancos (Postgres/Redis/Weaviate). Como o volume tem
+`prevent_destroy` e e' reanexado a cada instancia, os dados **sobrevivem a um replace/recriacao
+da instancia** (troca de AMI, mudanca de `user_data`, etc.); o EBS root continua descartavel.
+Os arquivos enviados pelos usuarios ja vao pro S3 (duraveis). Tamanho via `data_volume_size`
+(default 20 GiB). Para destruir de proposito, remova o `prevent_destroy` ou apague o volume.
+
+> **Migracao da instancia que ja esta no ar:** a instancia atual ainda tem os dados no EBS
+> root. Aplicar esta mudanca **anexa** o volume novo mas **nao** migra nem o monta sozinho (o
+> `user_data` so roda em boot novo). Veja o passo de migracao unica mais abaixo antes de
+> recriar a instancia, senao ela sobe com banco vazio.
+
 Variavel (repository **variable**, opcional):
 
 ```
@@ -204,7 +219,46 @@ DIFY_VERSION    # tag do Dify a subir; default no workflow e' 1.4.3. Ajuste para
 > (`STORAGE_TYPE=opendal` + `OPENDAL_SCHEME=s3`). Ao trocar a tag, confira o `.env.example`
 > dela e ajuste os `set_kv` do `deploy.sh` se necessario.
 
+### E-mail (SMTP via Amazon SES) — opcional
+
+Sem isto o Dify mostra *"Email server is not set up"* e convites de membros so saem
+como link manual. O Dify **so** configura e-mail por variaveis de ambiente (nao ha tela
+na UI do Community), entao o `deploy.sh` injeta as vars `MAIL_*`/`SMTP_*` no `.env`.
+
+A **senha SMTP nunca trafega pelo SSM** nem aparece em log: o workflow a publica no
+**SSM Parameter Store** (`SecureString`, em `/dify-prod/smtp_password`) a partir do secret
+`SMTP_PASSWORD`, e o `deploy.sh` a le na instancia via instance role (`ssm:GetParameter`).
+
+Para ligar:
+
+1. **SES** (mesma regiao): verifique a identidade do remetente (dominio/e-mail) e peca
+   *production access* (sair do sandbox) para enviar a qualquer destinatario.
+2. **SES → SMTP settings → Create SMTP credentials** (gera usuario + senha SMTP, distintos
+   das access keys da AWS).
+3. Defina os **repository variables** e o **secret** (Settings do repo):
+   ```
+   # variables
+   MAIL_TYPE=smtp
+   MAIL_DEFAULT_SEND_FROM=Dify <no-reply@seu-dominio>
+   SMTP_SERVER=email-smtp.us-east-1.amazonaws.com
+   SMTP_PORT=465
+   SMTP_USERNAME=<usuario SMTP do SES>
+   SMTP_USE_TLS=true
+   SMTP_OPPORTUNISTIC_TLS=false   # use true se SMTP_PORT=587
+   # secret
+   SMTP_PASSWORD=<senha SMTP do SES>
+   ```
+4. **Pre-requisito de IAM** (uma vez): a instance role precisa ler o parametro e o `dify-ci`
+   precisa escreve-lo. Isso ja esta no codigo — basta aplicar:
+   - `infra/compute.tf` (statements `ReadSmtpPassword`/`DecryptViaSsm`) → push na branch
+     `infra` p/ o `tofu apply`.
+   - `dify-ci` (statements `SsmPutSmtpParameter`/`KmsEncryptViaSsm`) → re-aplicar a policy
+     (`aws iam put-user-policy ...`, ver acima).
+
+Deixar `MAIL_TYPE` vazio mantem o e-mail desligado; o deploy roda normal sem ele.
+
 ## Custo
 
-Maquina ligada ~50h/semana (10h x 5 dias) + S3 + EBS gp3 enxuto, sem NAT e sem EIP:
-tipicamente **~US$ 11-14/mes** em `us-east-1` (fora do free tier; estimativa de ordem de grandeza).
+Maquina ligada ~50h/semana (10h x 5 dias) + S3 + EBS gp3 enxuto (root + ~US$ 1,6/mes do volume
+de dados de 20 GiB), sem NAT e sem EIP: tipicamente **~US$ 12-16/mes** em `us-east-1` (fora do
+free tier; estimativa de ordem de grandeza).

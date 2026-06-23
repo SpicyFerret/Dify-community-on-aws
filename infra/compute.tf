@@ -63,6 +63,41 @@ resource "aws_iam_instance_profile" "instance" {
 }
 
 ###############################################################################
+# Acesso da instancia ao parametro SMTP (senha do SES) no Parameter Store
+# - Lido pelo app/deploy.sh (via instance role) e injetado no .env do Dify.
+# - SecureString com a chave gerenciada aws/ssm; o kms:Decrypt e' restringido
+#   a chamadas feitas via SSM (kms:ViaService), nunca uso direto da chave.
+# - A senha NUNCA trafega pelo SSM Run Command: a instancia a le daqui.
+###############################################################################
+
+data "aws_iam_policy_document" "smtp_param" {
+  statement {
+    sid       = "ReadSmtpPassword"
+    effect    = "Allow"
+    actions   = ["ssm:GetParameter"]
+    resources = ["arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${local.name}/smtp_password"]
+  }
+
+  statement {
+    sid       = "DecryptViaSsm"
+    effect    = "Allow"
+    actions   = ["kms:Decrypt"]
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["ssm.${var.aws_region}.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "smtp_param" {
+  name   = "${local.name}-smtp-param"
+  role   = aws_iam_role.instance.id
+  policy = data.aws_iam_policy_document.smtp_param.json
+}
+
+###############################################################################
 # Launch template (Amazon Linux + Docker + cloudflared via container)
 ###############################################################################
 
@@ -120,4 +155,38 @@ resource "aws_instance" "dify" {
   tags = {
     Name = local.name
   }
+}
+
+###############################################################################
+# Volume de dados PERSISTENTE (montado em /opt/dify pelo user_data)
+# - Guarda o repo do Dify, o .env (SECRET_KEY) e os volumes dos bancos
+#   (Postgres/Redis/Weaviate). O EBS root e' descartavel; este NAO.
+# - Sobrevive a recriacao/replace da instancia: o Terraform desanexa do antigo
+#   e reanexa no novo; os dados continuam intactos.
+# - prevent_destroy: protege contra 'tofu destroy'/replace acidental do volume.
+#   (Para destruir de proposito, remova o flag ou apague o volume na mao.)
+###############################################################################
+
+resource "aws_ebs_volume" "data" {
+  availability_zone = aws_subnet.public.availability_zone
+  size              = var.data_volume_size
+  type              = "gp3"
+  encrypted         = true
+
+  tags = {
+    Name = "${local.name}-data"
+  }
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "aws_volume_attachment" "data" {
+  device_name = "/dev/sdf"
+  volume_id   = aws_ebs_volume.data.id
+  instance_id = aws_instance.dify.id
+
+  # Para a instancia antes de desanexar (desmonta limpo em um replace).
+  stop_instance_before_detaching = true
 }
