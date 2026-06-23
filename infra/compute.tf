@@ -156,3 +156,37 @@ resource "aws_instance" "dify" {
     Name = local.name
   }
 }
+
+###############################################################################
+# Volume de dados PERSISTENTE (montado em /opt/dify pelo user_data)
+# - Guarda o repo do Dify, o .env (SECRET_KEY) e os volumes dos bancos
+#   (Postgres/Redis/Weaviate). O EBS root e' descartavel; este NAO.
+# - Sobrevive a recriacao/replace da instancia: o Terraform desanexa do antigo
+#   e reanexa no novo; os dados continuam intactos.
+# - prevent_destroy: protege contra 'tofu destroy'/replace acidental do volume.
+#   (Para destruir de proposito, remova o flag ou apague o volume na mao.)
+###############################################################################
+
+resource "aws_ebs_volume" "data" {
+  availability_zone = aws_subnet.public.availability_zone
+  size              = var.data_volume_size
+  type              = "gp3"
+  encrypted         = true
+
+  tags = {
+    Name = "${local.name}-data"
+  }
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "aws_volume_attachment" "data" {
+  device_name = "/dev/sdf"
+  volume_id   = aws_ebs_volume.data.id
+  instance_id = aws_instance.dify.id
+
+  # Para a instancia antes de desanexar (desmonta limpo em um replace).
+  stop_instance_before_detaching = true
+}

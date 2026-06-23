@@ -182,6 +182,21 @@ plugin `docker compose`, faz checkout do Dify na tag pinada em `/opt/dify`, mont
 Nenhum segredo trafega pelo SSM — o bucket/regiao sao derivados e o `SECRET_KEY` nasce e fica
 na maquina. Os containers usam `restart: always`, entao voltam sozinhos no start diario das 08h.
 
+### Persistencia dos dados (sobrevive a recriacao da instancia)
+
+`/opt/dify` fica num **volume EBS dedicado e persistente** (`aws_ebs_volume.data`, montado pelo
+`user_data` via fstab), separado do EBS root. Ali vivem o repo do Dify, o `.env` (com o
+`SECRET_KEY`) e os volumes dos bancos (Postgres/Redis/Weaviate). Como o volume tem
+`prevent_destroy` e e' reanexado a cada instancia, os dados **sobrevivem a um replace/recriacao
+da instancia** (troca de AMI, mudanca de `user_data`, etc.); o EBS root continua descartavel.
+Os arquivos enviados pelos usuarios ja vao pro S3 (duraveis). Tamanho via `data_volume_size`
+(default 20 GiB). Para destruir de proposito, remova o `prevent_destroy` ou apague o volume.
+
+> **Migracao da instancia que ja esta no ar:** a instancia atual ainda tem os dados no EBS
+> root. Aplicar esta mudanca **anexa** o volume novo mas **nao** migra nem o monta sozinho (o
+> `user_data` so roda em boot novo). Veja o passo de migracao unica mais abaixo antes de
+> recriar a instancia, senao ela sobe com banco vazio.
+
 Variavel (repository **variable**, opcional):
 
 ```
@@ -244,5 +259,6 @@ Deixar `MAIL_TYPE` vazio mantem o e-mail desligado; o deploy roda normal sem ele
 
 ## Custo
 
-Maquina ligada ~50h/semana (10h x 5 dias) + S3 + EBS gp3 enxuto, sem NAT e sem EIP:
-tipicamente **~US$ 11-14/mes** em `us-east-1` (fora do free tier; estimativa de ordem de grandeza).
+Maquina ligada ~50h/semana (10h x 5 dias) + S3 + EBS gp3 enxuto (root + ~US$ 1,6/mes do volume
+de dados de 20 GiB), sem NAT e sem EIP: tipicamente **~US$ 12-16/mes** em `us-east-1` (fora do
+free tier; estimativa de ordem de grandeza).
