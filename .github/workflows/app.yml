@@ -109,13 +109,18 @@ jobs:
       - name: Run deploy via SSM
         run: |
           set -euo pipefail
-          # Prefixa o deploy.sh com os exports das variaveis necessarias.
-          SCRIPT="$(printf 'export DIFY_VERSION=%q\nexport S3_BUCKET_NAME=%q\nexport S3_REGION=%q\n' \
-            "$DIFY_VERSION" "$S3_BUCKET_NAME" "$AWS_REGION")"
-          SCRIPT="${SCRIPT}$(cat app/deploy.sh)"
+          # Monta o payload: exports + deploy.sh. Usa arquivo + 'jq --rawfile' para
+          # PRESERVAR as quebras de linha. (Command substitution $(...) remove o \n
+          # final, o que colava 'export S3_REGION=...' no shebang do deploy.sh.)
+          {
+            printf 'export DIFY_VERSION=%q\n'   "$DIFY_VERSION"
+            printf 'export S3_BUCKET_NAME=%q\n' "$S3_BUCKET_NAME"
+            printf 'export S3_REGION=%q\n'      "$AWS_REGION"
+            cat app/deploy.sh
+          } >/tmp/dify-deploy-payload.sh
 
           # jq escapa o script com seguranca; 'commands' e' uma lista de strings.
-          PARAMS="$(jq -n --arg s "$SCRIPT" '{commands: [$s]}')"
+          PARAMS="$(jq -n --rawfile s /tmp/dify-deploy-payload.sh '{commands: [$s]}')"
 
           CMD_ID="$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
