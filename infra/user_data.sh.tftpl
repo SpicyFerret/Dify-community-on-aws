@@ -29,4 +29,5 @@ TUNNEL_TOKEN="${tunnel_token}"
 docker run -d \
   --name cloudflare-tunnel \
   --restart unless-stopped \
+  --network host \
   cloudflare/cloudflared:latest tunnel --no-autoupdate run --token "$TUNNEL_TOKEN"
