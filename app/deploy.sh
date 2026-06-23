@@ -26,6 +26,7 @@ ENV_FILE="$COMPOSE_DIR/.env"
 # dos containers) no STDERR -- buffer separado e pequeno, entao a causa
 # sempre aparece no workflow, mesmo quando o stdout estoura o limite.
 # ---------------------------------------------------------------------------
+# shellcheck disable=SC2329  # invocada indiretamente pelo 'trap ... EXIT' abaixo.
 diag_on_fail() {
   local rc=$?
   [ "$rc" -eq 0 ] && return 0
@@ -183,24 +184,34 @@ if ! docker compose pull --quiet; then
   docker compose pull --quiet
 fi
 docker compose up -d
+# O nginx resolve os upstreams (api/web) pra um IP fixo quando sobe e cacheia
+# pra sempre (a config do Dify usa 'proxy_pass http://web:3000' sem 'resolver').
+# Num upgrade os backends sao recriados com IPs novos, mas o nginx fica de pe
+# apontando pro IP velho -> 502 "Connection refused". Reiniciar o nginx forca a
+# re-resolucao pros IPs atuais. Barato (<1s) e idempotente.
+docker compose restart nginx
 docker image prune -f
 docker compose ps
 
 # ---------------------------------------------------------------------------
 # 6. Healthcheck local (bypassa o Cloudflare; confiavel de dentro da maquina).
-#    O Dify responde 307 em "/" (redirect p/ /apps|/install).
+#    Forca IPv4 em 127.0.0.1: "localhost" pode resolver pra ::1 e dar 000
+#    mesmo com o nginx no ar. Qualquer resposta HTTP do nginx (2xx/3xx/4xx)
+#    ja prova que a stack subiu; so' 000 (sem conexao) ou 5xx (backend morto)
+#    contam como falha -- evita falso-negativo no codigo de "/" (307/200/404).
 # ---------------------------------------------------------------------------
-echo "==> Aguardando o app responder em http://localhost/ ..."
+echo "==> Aguardando o app responder em http://127.0.0.1/ ..."
 for attempt in $(seq 1 30); do
-  code="$(curl -s -o /dev/null -w '%{http_code}' http://localhost/ || echo 000)"
+  code="$(curl -4 -s -o /dev/null -w '%{http_code}' http://127.0.0.1/ || echo 000)"
   echo "  [${attempt}] HTTP ${code}"
   case "$code" in
-  200 | 301 | 302 | 307 | 308)
+  000 | 5*) ;; # sem conexao ou erro de gateway -> ainda subindo, aguarda
+  *)
     echo "==> App OK (HTTP ${code}). Deploy concluido."
     exit 0
     ;;
   esac
   sleep 10
 done
-echo "ERRO: app nao respondeu 2xx/3xx em http://localhost/ a tempo." >&2
+echo "ERRO: app nao respondeu (so' 000/5xx) em http://127.0.0.1/ a tempo." >&2
 exit 1
