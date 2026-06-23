@@ -1,0 +1,164 @@
+name: 'Deploy Infra'
+
+on:
+  push:
+    branches:
+      - infra
+    paths:
+      - 'infra/**'
+      - '.github/workflows/infra.yml'
+  pull_request:
+    branches:
+      - infra
+      - main
+    paths:
+      - 'infra/**'
+      - '.github/workflows/infra.yml'
+  workflow_dispatch:
+    inputs:
+      destroy:
+        description: 'Destruir a infraestrutura ao inves de aplicar'
+        type: boolean
+        default: false
+
+env:
+  TOFU_VERSION: '1.12.3'
+  TF_LINT_VERSION: 'v0.53.0'
+  DESTROY: ${{ github.event.inputs.destroy || 'false' }}
+  ENVIRONMENT: prod
+
+  # Backend remoto chumbado (Account-Regional namespace). O nome completo do bucket
+  # e' resolvido em runtime como: <prefixo>-<accountId>-<region> (ver passo "Resolve backend").
+  STATE_BUCKET_PREFIX: 'dify-tfstate'
+  STATE_KEY: 'infra/terraform.tfstate'
+  STATE_LOCK_TABLE: 'dify-tflock'
+
+  # Variaveis do OpenTofu (TF_VAR_*) lidas dos secrets/vars do repositorio.
+  TF_VAR_aws_region: ${{ vars.AWS_REGION }}
+  TF_VAR_ssh_public_key: ${{ secrets.TF_VAR_ssh_public_key }}
+  TF_VAR_app_hostname: ${{ secrets.TF_VAR_app_hostname }}
+  TF_VAR_cloudflare_api_token: ${{ secrets.TF_VAR_cloudflare_api_token }}
+  TF_VAR_cloudflare_account_id: ${{ secrets.TF_VAR_cloudflare_account_id }}
+  TF_VAR_cloudflare_zone_id: ${{ secrets.TF_VAR_cloudflare_zone_id }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: ./infra
+
+jobs:
+  opentofu:
+    name: OpenTofu
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup OpenTofu
+        uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: ${{ env.TOFU_VERSION }}
+
+      - name: Setup TFLint
+        uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: ${{ env.TF_LINT_VERSION }}
+
+      - name: TFLint
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tflint --init
+          tflint -f compact
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      # Nome do bucket de state = <prefixo>-<accountId>-<region> (globalmente unico,
+      # deterministico, sem precisar de secret). Exportado para os passos seguintes.
+      - name: Resolve backend (Account-Regional namespace)
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        run: |
+          set -euo pipefail
+          ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+          STATE_BUCKET="${STATE_BUCKET_PREFIX}-${ACCOUNT_ID}-${AWS_REGION}"
+          echo "STATE_BUCKET=${STATE_BUCKET}" >> "$GITHUB_ENV"
+          echo "Backend bucket: ${STATE_BUCKET}"
+
+      # Cria o backend remoto (S3 + DynamoDB) caso ainda nao exista. Idempotente:
+      # so cria o que falta, entao roda em todo evento antes do init.
+      - name: Bootstrap remote state (S3 + DynamoDB)
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        run: |
+          set -euo pipefail
+
+          echo "::group::Bucket de state ($STATE_BUCKET)"
+          if aws s3api head-bucket --bucket "$STATE_BUCKET" 2>/dev/null; then
+            echo "Bucket ja existe."
+          else
+            if [ "$AWS_REGION" = "us-east-1" ]; then
+              aws s3api create-bucket --bucket "$STATE_BUCKET" --region "$AWS_REGION"
+            else
+              aws s3api create-bucket --bucket "$STATE_BUCKET" --region "$AWS_REGION" \
+                --create-bucket-configuration LocationConstraint="$AWS_REGION"
+            fi
+            aws s3api put-bucket-versioning --bucket "$STATE_BUCKET" \
+              --versioning-configuration Status=Enabled
+            aws s3api put-public-access-block --bucket "$STATE_BUCKET" \
+              --public-access-block-configuration \
+              BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+            aws s3api put-bucket-encryption --bucket "$STATE_BUCKET" \
+              --server-side-encryption-configuration \
+              '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+            echo "Bucket criado."
+          fi
+          echo "::endgroup::"
+
+          echo "::group::Tabela de lock ($STATE_LOCK_TABLE)"
+          if aws dynamodb describe-table --table-name "$STATE_LOCK_TABLE" --region "$AWS_REGION" >/dev/null 2>&1; then
+            echo "Tabela ja existe."
+          else
+            aws dynamodb create-table --table-name "$STATE_LOCK_TABLE" --region "$AWS_REGION" \
+              --attribute-definitions AttributeName=LockID,AttributeType=S \
+              --key-schema AttributeName=LockID,KeyType=HASH \
+              --billing-mode PAY_PER_REQUEST
+            aws dynamodb wait table-exists --table-name "$STATE_LOCK_TABLE" --region "$AWS_REGION"
+            echo "Tabela criada."
+          fi
+          echo "::endgroup::"
+
+      - name: OpenTofu fmt
+        run: tofu fmt -check -recursive
+
+      - name: OpenTofu Init
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        run: |
+          tofu init -input=false \
+            -backend-config="bucket=$STATE_BUCKET" \
+            -backend-config="key=$STATE_KEY" \
+            -backend-config="region=$AWS_REGION" \
+            -backend-config="dynamodb_table=$STATE_LOCK_TABLE"
+
+      - name: OpenTofu Validate
+        run: tofu validate
+
+      - name: OpenTofu Plan
+        if: env.DESTROY != 'true'
+        run: tofu plan -input=false -no-color
+
+      - name: OpenTofu Apply
+        if: github.event_name == 'push' && github.ref == 'refs/heads/infra' && env.DESTROY != 'true'
+        run: tofu apply -auto-approve -input=false
+
+      - name: OpenTofu Destroy
+        if: github.event_name == 'workflow_dispatch' && env.DESTROY == 'true'
+        run: tofu destroy -auto-approve -input=false

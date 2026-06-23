@@ -1,0 +1,169 @@
+name: 'Deploy App (Dify)'
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'app/**'
+      - '.github/workflows/app.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'app/**'
+      - '.github/workflows/app.yml'
+  workflow_dispatch:
+    inputs:
+      dify_version:
+        description: 'Tag do Dify a subir (sobrepoe a variable DIFY_VERSION)'
+        type: string
+        required: false
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  INSTANCE_TAG: 'dify-prod'
+  # Versao do Dify: input manual > repository variable DIFY_VERSION > default.
+  DIFY_VERSION: ${{ github.event.inputs.dify_version || vars.DIFY_VERSION || '1.4.3' }}
+  # Hostname publico (para a verificacao pos-deploy via tunnel). Opcional.
+  APP_HOSTNAME: ${{ secrets.TF_VAR_app_hostname }}
+
+permissions:
+  contents: read
+
+jobs:
+  # Em PR: apenas valida o script de deploy (sem tocar na infra).
+  validate:
+    name: Validate
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: ShellCheck (app/deploy.sh)
+        run: shellcheck app/deploy.sh
+
+  # Em push na main ou disparo manual: faz o deploy via SSM Run Command.
+  deploy:
+    name: Deploy via SSM
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      # Descobre conta, nome do bucket (deterministico) e a instancia (por tag).
+      - name: Resolve targets
+        run: |
+          set -euo pipefail
+          ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+          S3_BUCKET_NAME="dify-prod-${ACCOUNT_ID}-${AWS_REGION}"
+          INSTANCE_ID="$(aws ec2 describe-instances \
+            --filters "Name=tag:Name,Values=${INSTANCE_TAG}" \
+                      "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+            --query 'Reservations[].Instances[].InstanceId | [0]' --output text)"
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
+            echo "::error::Instancia com tag Name=${INSTANCE_TAG} nao encontrada"
+            exit 1
+          fi
+          echo "S3_BUCKET_NAME=${S3_BUCKET_NAME}" >>"$GITHUB_ENV"
+          echo "INSTANCE_ID=${INSTANCE_ID}" >>"$GITHUB_ENV"
+          echo "Instancia: ${INSTANCE_ID} | bucket: ${S3_BUCKET_NAME} | dify: ${DIFY_VERSION}"
+
+      # A maquina pode estar parada (agendamento 08-18h). Liga e espera.
+      - name: Ensure instance running
+        run: |
+          set -euo pipefail
+          STATE="$(aws ec2 describe-instances --instance-ids "$INSTANCE_ID" \
+            --query 'Reservations[].Instances[].State.Name | [0]' --output text)"
+          echo "Estado atual: ${STATE}"
+          if [ "$STATE" != "running" ]; then
+            echo "Iniciando instancia..."
+            aws ec2 start-instances --instance-ids "$INSTANCE_ID" >/dev/null
+            aws ec2 wait instance-running --instance-ids "$INSTANCE_ID"
+          fi
+
+      - name: Wait for SSM agent online
+        run: |
+          set -euo pipefail
+          echo "Aguardando o agente SSM ficar Online..."
+          for i in $(seq 1 30); do
+            PING="$(aws ssm describe-instance-information \
+              --filters "Key=InstanceIds,Values=${INSTANCE_ID}" \
+              --query 'InstanceInformationList[0].PingStatus' --output text 2>/dev/null || echo None)"
+            echo "  tentativa ${i}: PingStatus=${PING}"
+            [ "$PING" = "Online" ] && exit 0
+            sleep 10
+          done
+          echo "::error::Agente SSM nao ficou Online a tempo"
+          exit 1
+
+      - name: Run deploy via SSM
+        run: |
+          set -euo pipefail
+          # Prefixa o deploy.sh com os exports das variaveis necessarias.
+          SCRIPT="$(printf 'export DIFY_VERSION=%q\nexport S3_BUCKET_NAME=%q\nexport S3_REGION=%q\n' \
+            "$DIFY_VERSION" "$S3_BUCKET_NAME" "$AWS_REGION")"
+          SCRIPT="${SCRIPT}$(cat app/deploy.sh)"
+
+          # jq escapa o script com seguranca; 'commands' e' uma lista de strings.
+          PARAMS="$(jq -n --arg s "$SCRIPT" '{commands: [$s]}')"
+
+          CMD_ID="$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name AWS-RunShellScript \
+            --comment "Deploy Dify ${DIFY_VERSION}" \
+            --parameters "$PARAMS" \
+            --query 'Command.CommandId' --output text)"
+          echo "CommandId: ${CMD_ID}"
+
+          echo "Acompanhando execucao (timeout ~15 min)..."
+          STATUS="Pending"
+          for i in $(seq 1 90); do
+            sleep 10
+            STATUS="$(aws ssm get-command-invocation \
+              --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
+              --query 'Status' --output text 2>/dev/null || echo Pending)"
+            echo "  [${i}] status=${STATUS}"
+            case "$STATUS" in
+              Success|Failed|Cancelled|TimedOut) break ;;
+            esac
+          done
+
+          echo "::group::stdout (truncado pelo SSM em ~24k chars)"
+          aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
+            --query 'StandardOutputContent' --output text || true
+          echo "::endgroup::"
+          echo "::group::stderr"
+          aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
+            --query 'StandardErrorContent' --output text || true
+          echo "::endgroup::"
+
+          if [ "$STATUS" != "Success" ]; then
+            echo "::error::Deploy via SSM falhou (status=${STATUS})"
+            exit 1
+          fi
+
+      # Best-effort: confirma que o app responde pelo tunnel (nao falha o job).
+      - name: Verify app via tunnel
+        if: ${{ env.APP_HOSTNAME != '' }}
+        run: |
+          set -euo pipefail
+          echo "Verificando https://${APP_HOSTNAME}/ ..."
+          for i in $(seq 1 20); do
+            CODE="$(curl -s -o /dev/null -w '%{http_code}' "https://${APP_HOSTNAME}/" || echo 000)"
+            echo "  [${i}] HTTP ${CODE}"
+            case "$CODE" in
+              200|301|302|307|308) echo "App respondendo."; exit 0 ;;
+            esac
+            sleep 10
+          done
+          echo "::warning::App ainda nao respondeu 2xx/3xx (containers podem estar inicializando)."
