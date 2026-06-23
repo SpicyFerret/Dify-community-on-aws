@@ -19,6 +19,30 @@ APP_DIR=/opt/dify
 COMPOSE_DIR="$APP_DIR/docker"
 ENV_FILE="$COMPOSE_DIR/.env"
 
+# ---------------------------------------------------------------------------
+# Diagnostico em caso de falha. O SSM trunca a saida em ~24k chars e o
+# 'docker compose pull' enche o stdout, empurrando o erro real (no fim) pra
+# fora da janela. Este trap despeja o essencial (disco, RAM, status e logs
+# dos containers) no STDERR -- buffer separado e pequeno, entao a causa
+# sempre aparece no workflow, mesmo quando o stdout estoura o limite.
+# ---------------------------------------------------------------------------
+diag_on_fail() {
+  local rc=$?
+  [ "$rc" -eq 0 ] && return 0
+  set +e
+  {
+    echo "===== DEPLOY FALHOU (rc=${rc}) -- diagnostico ====="
+    echo "== df -h / =="; df -h /
+    echo "== free -h =="; free -h
+    if [ -d "$COMPOSE_DIR" ]; then
+      cd "$COMPOSE_DIR" || exit "$rc"
+      echo "== docker compose ps =="; docker compose ps
+      echo "== docker compose logs (tail) =="; docker compose logs --tail=40
+    fi
+  } >&2
+}
+trap diag_on_fail EXIT
+
 echo "==> Deploy Dify ${DIFY_VERSION} | bucket=${S3_BUCKET_NAME} | region=${S3_REGION}"
 
 # ---------------------------------------------------------------------------
@@ -100,9 +124,22 @@ set_kv S3_ENDPOINT            ""
 
 # ---------------------------------------------------------------------------
 # 5. Sobe os containers
+#    Num upgrade de versao o 'pull' baixa o conjunto novo de imagens enquanto
+#    o antigo ainda esta em uso -> pico de disco que pode estourar o EBS root.
+#    Limpamos o lixo barato antes; se o pull mesmo assim falhar (sem disco),
+#    paramos os containers, removemos o conjunto antigo (libera o root) e
+#    tentamos de novo. Os dados ficam nos bind mounts em /opt/dify (intactos).
 # ---------------------------------------------------------------------------
 echo "==> docker compose pull && up -d"
-docker compose pull
+docker image prune -f >/dev/null 2>&1 || true
+if ! docker compose pull --quiet; then
+  echo "==> 'pull' falhou (provavel falta de disco). Liberando espaco e tentando de novo." >&2
+  docker compose down --remove-orphans || true
+  docker image prune -af >/dev/null 2>&1 || true
+  docker builder prune -af >/dev/null 2>&1 || true
+  df -h / >&2 || true
+  docker compose pull --quiet
+fi
 docker compose up -d
 docker image prune -f
 docker compose ps
