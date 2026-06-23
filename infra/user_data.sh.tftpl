@@ -23,6 +23,25 @@ systemctl enable docker
 # 4. Add the default EC2 user to the docker group
 usermod -a -G docker ec2-user
 
+# 4b. Volume de dados PERSISTENTE montado em /opt/dify (repo + .env + bancos).
+# Sobrevive a recriacao da instancia (o EBS root e' descartavel). O attachment
+# acontece logo apos o boot, entao esperamos o disco extra aparecer; formatamos
+# so' se estiver vazio e montamos por LABEL via fstab (idempotente em reboots).
+DATA_DEV=""
+for _ in $(seq 1 30); do
+  ROOT_DISK="$(findmnt -no SOURCE / | sed -E 's/p?[0-9]+$//')"
+  DATA_DEV="$(lsblk -dpno NAME,TYPE | awk '$2=="disk"{print $1}' | grep -vF "$ROOT_DISK" | head -1)"
+  [ -n "$DATA_DEV" ] && break
+  sleep 5
+done
+if [ -n "$DATA_DEV" ]; then
+  blkid "$DATA_DEV" >/dev/null 2>&1 || mkfs.ext4 -L dify-data "$DATA_DEV"
+  mkdir -p /opt/dify
+  grep -q 'LABEL=dify-data' /etc/fstab \
+    || echo 'LABEL=dify-data /opt/dify ext4 defaults,nofail 0 2' >> /etc/fstab
+  mount -a
+fi
+
 # 5. Run Cloudflare Tunnel via Docker
 TUNNEL_TOKEN="${tunnel_token}"
 

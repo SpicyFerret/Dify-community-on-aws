@@ -55,16 +55,19 @@ fi
 # ---------------------------------------------------------------------------
 # 3. Clone / checkout do Dify na tag pinada (preserva o .env entre deploys)
 # ---------------------------------------------------------------------------
+# /opt/dify e' um volume EBS persistente (montado pela infra), entao o diretorio
+# pode JA existir e nao estar vazio (lost+found, ou dados de uma instancia
+# anterior). 'git clone' recusa dir nao-vazio -> usamos init + fetch + checkout.
+mkdir -p "$APP_DIR"
 if [ ! -d "$APP_DIR/.git" ]; then
-  echo "==> Clonando Dify ${DIFY_VERSION}"
-  git clone --depth 1 --branch "$DIFY_VERSION" \
-    https://github.com/langgenius/dify.git "$APP_DIR"
-else
-  echo "==> Atualizando Dify para ${DIFY_VERSION}"
-  git -C "$APP_DIR" fetch --depth 1 origin \
-    "refs/tags/${DIFY_VERSION}:refs/tags/${DIFY_VERSION}"
-  git -C "$APP_DIR" checkout -f "refs/tags/${DIFY_VERSION}"
+  echo "==> Inicializando repo do Dify em ${APP_DIR}"
+  git -C "$APP_DIR" init -q
+  git -C "$APP_DIR" remote add origin https://github.com/langgenius/dify.git
 fi
+echo "==> Buscando/checkout Dify ${DIFY_VERSION}"
+git -C "$APP_DIR" fetch --depth 1 origin \
+  "refs/tags/${DIFY_VERSION}:refs/tags/${DIFY_VERSION}"
+git -C "$APP_DIR" checkout -f "refs/tags/${DIFY_VERSION}"
 
 cd "$COMPOSE_DIR" || exit 1
 
