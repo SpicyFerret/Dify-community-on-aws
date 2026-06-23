@@ -25,8 +25,6 @@ env:
   INSTANCE_TAG: 'dify-prod'
   # Versao do Dify: input manual > repository variable DIFY_VERSION > default.
   DIFY_VERSION: ${{ github.event.inputs.dify_version || vars.DIFY_VERSION || '1.4.3' }}
-  # Hostname publico (para a verificacao pos-deploy via tunnel). Opcional.
-  APP_HOSTNAME: ${{ secrets.TF_VAR_app_hostname }}
 
 permissions:
   contents: read
@@ -156,19 +154,5 @@ jobs:
             echo "::error::Deploy via SSM falhou (status=${STATUS})"
             exit 1
           fi
-
-      # Best-effort: confirma que o app responde pelo tunnel (nao falha o job).
-      - name: Verify app via tunnel
-        if: ${{ env.APP_HOSTNAME != '' }}
-        run: |
-          set -euo pipefail
-          echo "Verificando https://${APP_HOSTNAME}/ ..."
-          for i in $(seq 1 20); do
-            CODE="$(curl -s -o /dev/null -w '%{http_code}' "https://${APP_HOSTNAME}/" || echo 000)"
-            echo "  [${i}] HTTP ${CODE}"
-            case "$CODE" in
-              200|301|302|307|308) echo "App respondendo."; exit 0 ;;
-            esac
-            sleep 10
-          done
-          echo "::warning::App ainda nao respondeu 2xx/3xx (containers podem estar inicializando)."
+          # O healthcheck do app roda dentro do deploy.sh (curl localhost), entao o
+          # status Success acima ja reflete que o Dify respondeu 2xx/3xx na maquina.
