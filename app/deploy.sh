@@ -99,6 +99,45 @@ set_kv S3_USE_AWS_MANAGED_IAM true
 set_kv S3_ENDPOINT            ""
 
 # ---------------------------------------------------------------------------
+# 4b. E-mail (SMTP via Amazon SES) - OPCIONAL.
+#     So roda quando MAIL_TYPE chega preenchido (vars do workflow). A senha
+#     NUNCA trafega pelo SSM: e' lida do SSM Parameter Store (SecureString)
+#     pela instance role, igual o SECRET_KEY nunca sai da maquina.
+# ---------------------------------------------------------------------------
+if [ -n "${MAIL_TYPE:-}" ]; then
+  echo "==> Configurando e-mail (MAIL_TYPE=${MAIL_TYPE})"
+  : "${SMTP_PASSWORD_PARAM:?SMTP_PASSWORD_PARAM nao definido (necessario com MAIL_TYPE)}"
+
+  # AWS CLI v2 (o AL2023 nao traz por padrao) para ler o Parameter Store.
+  if ! command -v aws >/dev/null 2>&1; then
+    echo "==> Instalando AWS CLI v2"
+    command -v unzip >/dev/null 2>&1 || dnf install -y unzip
+    curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip" \
+      -o /tmp/awscliv2.zip
+    unzip -q -o /tmp/awscliv2.zip -d /tmp
+    /tmp/aws/install --update
+  fi
+
+  echo "==> Lendo senha SMTP de ${SMTP_PASSWORD_PARAM} (Parameter Store)"
+  SMTP_PASSWORD="$(aws ssm get-parameter \
+    --name "$SMTP_PASSWORD_PARAM" --with-decryption \
+    --region "$S3_REGION" \
+    --query 'Parameter.Value' --output text)"
+
+  set_kv MAIL_TYPE              "$MAIL_TYPE"
+  set_kv MAIL_DEFAULT_SEND_FROM "${MAIL_DEFAULT_SEND_FROM:-}"
+  set_kv SMTP_SERVER            "${SMTP_SERVER:-}"
+  set_kv SMTP_PORT              "${SMTP_PORT:-465}"
+  set_kv SMTP_USERNAME          "${SMTP_USERNAME:-}"
+  set_kv SMTP_PASSWORD          "$SMTP_PASSWORD"
+  set_kv SMTP_USE_TLS           "${SMTP_USE_TLS:-true}"
+  set_kv SMTP_OPPORTUNISTIC_TLS "${SMTP_OPPORTUNISTIC_TLS:-false}"
+  unset SMTP_PASSWORD
+else
+  echo "==> E-mail nao configurado (MAIL_TYPE vazio); pulando."
+fi
+
+# ---------------------------------------------------------------------------
 # 5. Sobe os containers
 # ---------------------------------------------------------------------------
 echo "==> docker compose pull && up -d"

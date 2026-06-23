@@ -204,6 +204,44 @@ DIFY_VERSION    # tag do Dify a subir; default no workflow e' 1.4.3. Ajuste para
 > (`STORAGE_TYPE=opendal` + `OPENDAL_SCHEME=s3`). Ao trocar a tag, confira o `.env.example`
 > dela e ajuste os `set_kv` do `deploy.sh` se necessario.
 
+### E-mail (SMTP via Amazon SES) — opcional
+
+Sem isto o Dify mostra *"Email server is not set up"* e convites de membros so saem
+como link manual. O Dify **so** configura e-mail por variaveis de ambiente (nao ha tela
+na UI do Community), entao o `deploy.sh` injeta as vars `MAIL_*`/`SMTP_*` no `.env`.
+
+A **senha SMTP nunca trafega pelo SSM** nem aparece em log: o workflow a publica no
+**SSM Parameter Store** (`SecureString`, em `/dify-prod/smtp_password`) a partir do secret
+`SMTP_PASSWORD`, e o `deploy.sh` a le na instancia via instance role (`ssm:GetParameter`).
+
+Para ligar:
+
+1. **SES** (mesma regiao): verifique a identidade do remetente (dominio/e-mail) e peca
+   *production access* (sair do sandbox) para enviar a qualquer destinatario.
+2. **SES → SMTP settings → Create SMTP credentials** (gera usuario + senha SMTP, distintos
+   das access keys da AWS).
+3. Defina os **repository variables** e o **secret** (Settings do repo):
+   ```
+   # variables
+   MAIL_TYPE=smtp
+   MAIL_DEFAULT_SEND_FROM=Dify <no-reply@seu-dominio>
+   SMTP_SERVER=email-smtp.us-east-1.amazonaws.com
+   SMTP_PORT=465
+   SMTP_USERNAME=<usuario SMTP do SES>
+   SMTP_USE_TLS=true
+   SMTP_OPPORTUNISTIC_TLS=false   # use true se SMTP_PORT=587
+   # secret
+   SMTP_PASSWORD=<senha SMTP do SES>
+   ```
+4. **Pre-requisito de IAM** (uma vez): a instance role precisa ler o parametro e o `dify-ci`
+   precisa escreve-lo. Isso ja esta no codigo — basta aplicar:
+   - `infra/compute.tf` (statements `ReadSmtpPassword`/`DecryptViaSsm`) → push na branch
+     `infra` p/ o `tofu apply`.
+   - `dify-ci` (statements `SsmPutSmtpParameter`/`KmsEncryptViaSsm`) → re-aplicar a policy
+     (`aws iam put-user-policy ...`, ver acima).
+
+Deixar `MAIL_TYPE` vazio mantem o e-mail desligado; o deploy roda normal sem ele.
+
 ## Custo
 
 Maquina ligada ~50h/semana (10h x 5 dias) + S3 + EBS gp3 enxuto, sem NAT e sem EIP:
