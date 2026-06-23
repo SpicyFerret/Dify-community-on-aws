@@ -25,6 +25,16 @@ env:
   INSTANCE_TAG: 'dify-prod'
   # Versao do Dify: input manual > repository variable DIFY_VERSION > default.
   DIFY_VERSION: ${{ github.event.inputs.dify_version || vars.DIFY_VERSION || '1.4.3' }}
+  # E-mail (SES) - OPCIONAL. Deixe MAIL_TYPE vazio para nao configurar e-mail.
+  # Os valores nao-secretos vem de repository variables; a senha vem do secret
+  # SMTP_PASSWORD (publicado no Parameter Store, lido na instancia pela role).
+  MAIL_TYPE: ${{ vars.MAIL_TYPE }}
+  MAIL_DEFAULT_SEND_FROM: ${{ vars.MAIL_DEFAULT_SEND_FROM }}
+  SMTP_SERVER: ${{ vars.SMTP_SERVER }}
+  SMTP_PORT: ${{ vars.SMTP_PORT }}
+  SMTP_USERNAME: ${{ vars.SMTP_USERNAME }}
+  SMTP_USE_TLS: ${{ vars.SMTP_USE_TLS }}
+  SMTP_OPPORTUNISTIC_TLS: ${{ vars.SMTP_OPPORTUNISTIC_TLS }}
 
 permissions:
   contents: read
@@ -104,16 +114,44 @@ jobs:
           echo "::error::Agente SSM nao ficou Online a tempo"
           exit 1
 
+      # E-mail (SES): publica a senha SMTP no Parameter Store (SecureString) para
+      # o deploy.sh ler na instancia via instance role. A senha NUNCA entra no
+      # payload do SSM. Pula em silencio se o secret SMTP_PASSWORD nao existir.
+      - name: Sync SMTP password to Parameter Store
+        env:
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SMTP_PASSWORD}" ]; then
+            echo "secrets.SMTP_PASSWORD vazio -> e-mail desabilitado; nada a publicar."
+            exit 0
+          fi
+          aws ssm put-parameter \
+            --name "/${INSTANCE_TAG}/smtp_password" \
+            --type SecureString \
+            --value "${SMTP_PASSWORD}" \
+            --overwrite >/dev/null
+          echo "Senha SMTP publicada em /${INSTANCE_TAG}/smtp_password"
+
       - name: Run deploy via SSM
         run: |
           set -euo pipefail
           # Monta o payload: exports + deploy.sh. Usa arquivo + 'jq --rawfile' para
           # PRESERVAR as quebras de linha. (Command substitution $(...) remove o \n
           # final, o que colava 'export S3_REGION=...' no shebang do deploy.sh.)
+          # A senha SMTP NAO vai aqui: o deploy.sh a le do Parameter Store.
           {
-            printf 'export DIFY_VERSION=%q\n'   "$DIFY_VERSION"
-            printf 'export S3_BUCKET_NAME=%q\n' "$S3_BUCKET_NAME"
-            printf 'export S3_REGION=%q\n'      "$AWS_REGION"
+            printf 'export DIFY_VERSION=%q\n'           "$DIFY_VERSION"
+            printf 'export S3_BUCKET_NAME=%q\n'         "$S3_BUCKET_NAME"
+            printf 'export S3_REGION=%q\n'              "$AWS_REGION"
+            printf 'export MAIL_TYPE=%q\n'              "${MAIL_TYPE:-}"
+            printf 'export MAIL_DEFAULT_SEND_FROM=%q\n' "${MAIL_DEFAULT_SEND_FROM:-}"
+            printf 'export SMTP_SERVER=%q\n'            "${SMTP_SERVER:-}"
+            printf 'export SMTP_PORT=%q\n'              "${SMTP_PORT:-}"
+            printf 'export SMTP_USERNAME=%q\n'          "${SMTP_USERNAME:-}"
+            printf 'export SMTP_USE_TLS=%q\n'           "${SMTP_USE_TLS:-}"
+            printf 'export SMTP_OPPORTUNISTIC_TLS=%q\n' "${SMTP_OPPORTUNISTIC_TLS:-}"
+            printf 'export SMTP_PASSWORD_PARAM=%q\n'    "/${INSTANCE_TAG}/smtp_password"
             cat app/deploy.sh
           } >/tmp/dify-deploy-payload.sh
 

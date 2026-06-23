@@ -63,6 +63,41 @@ resource "aws_iam_instance_profile" "instance" {
 }
 
 ###############################################################################
+# Acesso da instancia ao parametro SMTP (senha do SES) no Parameter Store
+# - Lido pelo app/deploy.sh (via instance role) e injetado no .env do Dify.
+# - SecureString com a chave gerenciada aws/ssm; o kms:Decrypt e' restringido
+#   a chamadas feitas via SSM (kms:ViaService), nunca uso direto da chave.
+# - A senha NUNCA trafega pelo SSM Run Command: a instancia a le daqui.
+###############################################################################
+
+data "aws_iam_policy_document" "smtp_param" {
+  statement {
+    sid       = "ReadSmtpPassword"
+    effect    = "Allow"
+    actions   = ["ssm:GetParameter"]
+    resources = ["arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${local.name}/smtp_password"]
+  }
+
+  statement {
+    sid       = "DecryptViaSsm"
+    effect    = "Allow"
+    actions   = ["kms:Decrypt"]
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["ssm.${var.aws_region}.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "smtp_param" {
+  name   = "${local.name}-smtp-param"
+  role   = aws_iam_role.instance.id
+  policy = data.aws_iam_policy_document.smtp_param.json
+}
+
+###############################################################################
 # Launch template (Amazon Linux + Docker + cloudflared via container)
 ###############################################################################
 

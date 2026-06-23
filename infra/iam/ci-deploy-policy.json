@@ -186,6 +186,29 @@
       "Resource": "*"
     },
     {
+      "Sid": "SsmPutSmtpParameter",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:PutParameter",
+        "ssm:GetParameter"
+      ],
+      "Resource": "arn:aws:ssm:<REGION>:<ACCOUNT_ID>:parameter/dify-prod/smtp_password"
+    },
+    {
+      "Sid": "KmsEncryptViaSsm",
+      "Effect": "Allow",
+      "Action": [
+        "kms:Encrypt",
+        "kms:GenerateDataKey"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "kms:ViaService": "ssm.<REGION>.amazonaws.com"
+        }
+      }
+    },
+    {
       "Sid": "ReadIdentity",
       "Effect": "Allow",
       "Action": "sts:GetCallerIdentity",
