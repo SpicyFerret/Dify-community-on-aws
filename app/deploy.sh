@@ -106,4 +106,22 @@ docker compose pull
 docker compose up -d
 docker image prune -f
 docker compose ps
-echo "==> Deploy concluido."
+
+# ---------------------------------------------------------------------------
+# 6. Healthcheck local (bypassa o Cloudflare; confiavel de dentro da maquina).
+#    O Dify responde 307 em "/" (redirect p/ /apps|/install).
+# ---------------------------------------------------------------------------
+echo "==> Aguardando o app responder em http://localhost/ ..."
+for attempt in $(seq 1 30); do
+  code="$(curl -s -o /dev/null -w '%{http_code}' http://localhost/ || echo 000)"
+  echo "  [${attempt}] HTTP ${code}"
+  case "$code" in
+  200 | 301 | 302 | 307 | 308)
+    echo "==> App OK (HTTP ${code}). Deploy concluido."
+    exit 0
+    ;;
+  esac
+  sleep 10
+done
+echo "ERRO: app nao respondeu 2xx/3xx em http://localhost/ a tempo." >&2
+exit 1
