@@ -166,6 +166,27 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 4c. URLs publicas do console/app.
+#     O Dify monta o redirect_uri do OAuth dos datasources (Google Drive,
+#     Notion, etc.) a partir destas URLs. Atras do Cloudflare Tunnel a origem
+#     recebe a requisicao como HTTP em localhost:80, entao com CONSOLE_API_URL
+#     vazio o Dify gera um callback 'http://...' -> o Google recusa
+#     ("invalid_request / nao cumpre a politica OAuth 2.0", que exige HTTPS).
+#     Fixar a URL publica HTTPS aqui resolve. So' roda com APP_HOSTNAME setado.
+# ---------------------------------------------------------------------------
+if [ -n "${APP_HOSTNAME:-}" ]; then
+  echo "==> Configurando URLs publicas (https://${APP_HOSTNAME})"
+  base_url="https://${APP_HOSTNAME}"
+  set_kv CONSOLE_API_URL "$base_url"
+  set_kv CONSOLE_WEB_URL "$base_url"
+  set_kv SERVICE_API_URL "$base_url"
+  set_kv APP_API_URL     "$base_url"
+  set_kv APP_WEB_URL     "$base_url"
+else
+  echo "==> APP_HOSTNAME vazio; OAuth de datasources (Google Drive etc.) pode falhar." >&2
+fi
+
+# ---------------------------------------------------------------------------
 # 5. Sobe os containers
 #    Num upgrade de versao o 'pull' baixa o conjunto novo de imagens enquanto
 #    o antigo ainda esta em uso -> pico de disco que pode estourar o EBS root.

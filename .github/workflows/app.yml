@@ -25,6 +25,11 @@ env:
   INSTANCE_TAG: 'dify-prod'
   # Versao do Dify: input manual > repository variable DIFY_VERSION > default.
   DIFY_VERSION: ${{ github.event.inputs.dify_version || vars.DIFY_VERSION || '1.4.3' }}
+  # Hostname publico (mesmo do tunnel Cloudflare). Fixa as URLs HTTPS do console
+  # no .env -> redirect_uri correto do OAuth dos datasources (Google Drive etc.).
+  # Reusa o TF_VAR_app_hostname que a infra ja define como secret (e' so' um DNS
+  # publico, nao um segredo de fato -- por isso pode trafegar no payload do SSM).
+  APP_HOSTNAME: ${{ vars.APP_HOSTNAME || secrets.TF_VAR_app_hostname }}
   # E-mail (SES) - OPCIONAL. Deixe MAIL_TYPE vazio para nao configurar e-mail.
   # Os valores nao-secretos vem de repository variables; a senha vem do secret
   # SMTP_PASSWORD (publicado no Parameter Store, lido na instancia pela role).
@@ -144,6 +149,7 @@ jobs:
             printf 'export DIFY_VERSION=%q\n'           "$DIFY_VERSION"
             printf 'export S3_BUCKET_NAME=%q\n'         "$S3_BUCKET_NAME"
             printf 'export S3_REGION=%q\n'              "$AWS_REGION"
+            printf 'export APP_HOSTNAME=%q\n'           "${APP_HOSTNAME:-}"
             printf 'export MAIL_TYPE=%q\n'              "${MAIL_TYPE:-}"
             printf 'export MAIL_DEFAULT_SEND_FROM=%q\n' "${MAIL_DEFAULT_SEND_FROM:-}"
             printf 'export SMTP_SERVER=%q\n'            "${SMTP_SERVER:-}"
