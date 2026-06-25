@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- Recarrega sozinho de tempos em tempos: quando o app voltar (08h), o usuario
+       e' levado de volta ao Dify sem precisar atualizar manualmente. -->
+  <meta http-equiv="refresh" content="60">
+  <meta name="robots" content="noindex">
+  <title>Em manutencao</title>
+  <style>
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      display: flex; align-items: center; justify-content: center;
+      min-height: 100%; padding: 24px;
+      background: #0f172a; color: #e2e8f0;
+    }
+    .card {
+      max-width: 560px; width: 100%; text-align: center;
+      background: #1e293b; border: 1px solid #334155; border-radius: 16px;
+      padding: 48px 40px; box-shadow: 0 20px 60px rgba(0,0,0,.35);
+    }
+    .icon { font-size: 56px; line-height: 1; margin-bottom: 16px; }
+    h1 { font-size: 1.6rem; margin: 0 0 12px; color: #f8fafc; }
+    p { font-size: 1.05rem; line-height: 1.6; margin: 0 0 12px; color: #cbd5e1; }
+    .hours {
+      display: inline-block; margin-top: 12px; padding: 10px 18px;
+      background: #0b1220; border: 1px solid #334155; border-radius: 10px;
+      font-size: .95rem; color: #93c5fd;
+    }
+    .muted { margin-top: 24px; font-size: .85rem; color: #64748b; }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <div class="icon" aria-hidden="true">&#128296;</div>
+    <h1>Estamos em manutencao</h1>
+    <p>O servico esta temporariamente fora do ar, dentro de uma janela planejada.</p>
+    <p>Esta pagina recarrega sozinha &mdash; assim que voltarmos, voce sera redirecionado automaticamente.</p>
+    <div class="hours">Horario de funcionamento: seg&ndash;sex, 08h&ndash;18h</div>
+    <p class="muted">Se o problema persistir fora desse horario, entre em contato com o administrador.</p>
+  </main>
+</body>
+</html>

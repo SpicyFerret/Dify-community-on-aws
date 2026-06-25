@@ -32,3 +32,13 @@ output "data_volume_id" {
   description = "ID do volume EBS persistente (/opt/dify: repo, .env e bancos)."
   value       = aws_ebs_volume.data.id
 }
+
+output "maintenance_bucket_name" {
+  description = "Bucket S3 publico com a pagina de manutencao (servida pelo Worker no failover)."
+  value       = aws_s3_bucket.maintenance.bucket
+}
+
+output "maintenance_page_url" {
+  description = "URL HTTPS direta do HTML de manutencao no bucket (origem usada pelo Worker)."
+  value       = "https://${aws_s3_bucket.maintenance.bucket_regional_domain_name}/${aws_s3_object.maintenance_index.key}"
+}
