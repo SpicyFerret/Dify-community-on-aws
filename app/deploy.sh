@@ -173,6 +173,12 @@ fi
 #     vazio o Dify gera um callback 'http://...' -> o Google recusa
 #     ("invalid_request / nao cumpre a politica OAuth 2.0", que exige HTTPS).
 #     Fixar a URL publica HTTPS aqui resolve. So' roda com APP_HOSTNAME setado.
+#
+#     FILES_URL e' o prefixo da URL assinada de download/preview dos arquivos.
+#     Com ela vazia, o Dify gera uma URL RELATIVA ('/files/...') e os plugins
+#     (ex.: Knowledge Pipeline / "Convert to Markdown") falham ao baixar o
+#     arquivo: "Request URL is missing an 'http://' or 'https://' protocol".
+#     Por isso entra junto, apontando para a mesma base HTTPS publica.
 # ---------------------------------------------------------------------------
 if [ -n "${APP_HOSTNAME:-}" ]; then
   echo "==> Configurando URLs publicas (https://${APP_HOSTNAME})"
@@ -182,6 +188,18 @@ if [ -n "${APP_HOSTNAME:-}" ]; then
   set_kv SERVICE_API_URL "$base_url"
   set_kv APP_API_URL     "$base_url"
   set_kv APP_WEB_URL     "$base_url"
+  set_kv FILES_URL       "$base_url"
+  # INTERNAL_FILES_URL: URL interna (rede Docker) que o plugin daemon usa para
+  # baixar arquivos sem sair pela internet/Cloudflare. Sem ela o Dify cai no
+  # FILES_URL publico (hairpin pelo tunnel: mais lento e dependente do tunnel).
+  # /files e' servido pelo container 'api' na porta 5001.
+  set_kv INTERNAL_FILES_URL "http://api:5001"
+  # Endpoints de plugins (webhooks) e triggers de pipeline: o default aponta
+  # para localhost. Para serem chamados de fora precisam da URL publica HTTPS.
+  # nginx roteia /e/ -> plugin_daemon e /triggers -> api. So' relevante se voce
+  # usar plugins de endpoint/trigger; inofensivo caso contrario.
+  set_kv ENDPOINT_URL_TEMPLATE "${base_url}/e/{hook_id}"
+  set_kv TRIGGER_URL "$base_url"
 else
   echo "==> APP_HOSTNAME vazio; OAuth de datasources (Google Drive etc.) pode falhar." >&2
 fi
